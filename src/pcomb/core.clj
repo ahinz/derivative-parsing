@@ -8,7 +8,8 @@
 
 (s/def ::strict-parser #(satisfies? Parser %))
 (s/def ::lazy-parser delay?)
-(s/def ::parser ::strict-parser)
+(s/def ::parser (s/or :strict ::strict-parser
+                      :lazy ::lazy-parser))
 (s/def ::token ::s/any)
 
 (s/fdef parse-null
@@ -46,6 +47,7 @@
            (rest input-stream))))
 
 (def empty-language
+  "The empty language accepts no strings and returns an empty null parse"
   (reify Parser
     (-is-empty? [_] true)
     (-derivep [_ chr]
@@ -53,7 +55,10 @@
     (-parse-null [this]
       nil)))
 
-(defn null-string [outp]
+(defn null-string
+  "The null string combinator accepts only the empty string, return
+   the value of `outp` for the null result"
+  [outp]
   (reify Parser
     (-is-empty? [_] true)
     (-derivep [_ chr]
@@ -61,7 +66,9 @@
     (-parse-null [_]
       outp)))
 
-(defn char-parser [c]
+(defn char-parser
+  "Parses a single character"
+  [c]
   (reify Parser
     (-is-empty? [_] false)
     (-derivep [_ chr]
@@ -71,54 +78,108 @@
     (-parse-null [this]
       nil)))
 
-(defn reduction-parser [t f]
+;; Clojure doesn't quite directly support lazy arguments
+;; for normal functions but we need lazy semantics for reduction,
+;; alternation (union) and concatenation.
+;;
+;; To achieve the required laziness transparently the operations
+;; are written as macros, wrapping arguments in `delay` objects
+;; and passing them to the *'d functions
+;;
+
+(defmacro reduction-parser
+  "Given a combinator `parser`, apply the given function `f` to
+   the parsed output"
+  [parser f]
+  `(reduction-parser* (delay ~parser) ~f))
+
+(defn reduction-parser* [t f]
   (reify Parser
-    (-is-empty? [_] (is-empty? t))
+    (-is-empty? [_] (is-empty? @t))
     (-derivep [_ chr]
-      (reduction-parser (derivep t chr) f))
+      (reduction-parser (derivep @t chr) f))
     (-parse-null [this]
-      (map f (parse-null t)))))
+      (map f (parse-null @t)))))
 
-(defn alt-parser [& parsers]
+(defmacro alt-parser
+  "Given a sequence of parsers return a combinator that
+   matches any of them"
+  [parsers]
+  `(alt-parser* (delay ~parsers)))
+
+(defn alt-parser* [parsers]
   (reify Parser
-    (-is-empty? [_] (not-every? false? (map is-empty? parsers)))
+    (-is-empty? [_] (not-every? false? (map is-empty? @parsers)))
     (-derivep [_ chr]
-      (apply alt-parser (map #(derivep % chr) parsers)))
+      ;; Lazy compute additional parsers
+      (alt-parser (map (fn [parser]
+                         (derivep parser chr)) @parsers)))
     (-parse-null [this]
-      (mapcat parse-null parsers))))
+      (mapcat parse-null @parsers))))
 
+(defmacro and-parser
+  "Given two parsers return a parser that matches
+   `parser1` followed by `parser2`"
+  [parser1 parser2]
+  `(and-parser* (delay ~parser1) (delay ~parser2)))
 
-(defn and-parser [parser1 parser2]
+(defn and-parser* [parser1 parser2]
   (reify Parser
-    (-is-empty? [_] (and (is-empty? parser1)
-                         (is-empty? parser2)))
+    (-is-empty? [_] (and (is-empty? @parser1)
+                         (is-empty? @parser2)))
     (-derivep [_ chr]
-      (if (is-empty? parser1)
+      (if (is-empty? @parser1)
         (alt-parser
-         (and-parser (derivep parser1 chr) parser2)
-         (and-parser (null-string (parse-null parser1))
-                     (derivep parser2 chr)))
-        (and-parser (derivep parser1 chr) parser2)))
+         [(and-parser (derivep @parser1 chr) @parser2)
+          (and-parser (null-string (parse-null @parser1))
+                      (derivep @parser2 chr))])
+        (and-parser (derivep @parser1 chr) @parser2)))
     (-parse-null [this]
       (mapcat (fn [t1]
-                (map (partial vector t1) (parse-null parser2)))
-              (parse-null parser1)))))
+                (map (partial vector t1) (parse-null @parser2)))
+              (parse-null @parser1)))))
 
 (defn left-joining-and-parser [p1 p2]
-  (reduction-parser (and-parser p1 p2) (fn [[xs x :as m]]
+  (reduction-parser (and-parser p1 p2) (fn [[xs x]]
                                          (conj xs x))))
 
-(defn concat-parser [parser & parsers]
-  (if (empty? parsers)
-    parser
-    (reduce left-joining-and-parser
-            (and-parser parser (first parsers))
-            (rest parsers))))
+(defn right-joining-and-parser [p1 p2]
+  (reduction-parser (and-parser p1 p2) (fn [[x xs :as m]]
+                                         (conj xs x))))
 
-(defn string-parser [s]
+(defmacro concat-parser
+  "Given a seq of parsers `p1, p2, ... pn` return a parser
+   that matches `p1` followed by `p2` ... `pn`"
+  [parsers]
+  `(concat-parser* (delay ~parsers)))
+
+(defn concat-parser* [lazy-parsers]
+  (let [[parser & parsers] @lazy-parsers]
+   (if (empty? parsers)
+     parser
+     (reduce left-joining-and-parser
+             (and-parser parser (first parsers))
+             (rest parsers)))))
+
+
+(defn string-parser
+  "Return a parser matching the given string"
+  [s]
   (if (empty? s)
     (null-string #{""})
-    (reduction-parser (apply concat-parser (map char-parser s)) (partial apply str))))
+    (reduction-parser (concat-parser (map char-parser s)) (partial apply str))))
 
-(defn char-set-parser [cs]
-  (apply alt-parser (map char-parser cs)))
+(defn char-set-parser
+  "Return a parser that matches any character in `cs`"
+  [cs]
+  (alt-parser (map (fn [c] (delay (char-parser c))) cs)))
+
+(defn kleene-parser
+  "Return a parser that matches `parser` any number of times"
+  [parser]
+  (alt-parser [(null-string #{[]})
+               (right-joining-and-parser parser (kleene-parser parser))]))
+
+(def *-parser kleene-parser)
+(defn +-parser [parser]
+  (right-joining-and-parser parser (kleene-parser parser)))

@@ -87,7 +87,8 @@
 (defspec alt-parser-matches-branches
   itrs
   (prop/for-all [chars (gen/not-empty (gen/vector gen/char))]
-    (let [parser (apply alt-parser (map char-parser chars))
+    ;; We don't need lazy semantics for char-parsers
+    (let [parser (alt-parser (map char-parser chars))
           parses? (fn [c]
                     (= (set (parse-full parser [c])) #{(str c)}))]
       (every? true? (map parses? chars)))))
