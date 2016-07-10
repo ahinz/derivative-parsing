@@ -93,13 +93,13 @@
   [parser f]
   `(reduction-parser* (delay ~parser) ~f))
 
-(defn reduction-parser* [t f]
+(defn reduction-parser* [parser f]
   (reify Parser
-    (-is-empty? [_] (is-empty? @t))
+    (-is-empty? [_] (is-empty? @parser))
     (-derivep [_ chr]
-      (reduction-parser (derivep @t chr) f))
+      (reduction-parser (derivep @parser chr) f))
     (-parse-null [this]
-      (map f (parse-null @t)))))
+      (map f (parse-null @parser)))))
 
 (defmacro alt-parser
   "Given a sequence of parsers return a combinator that
@@ -172,14 +172,16 @@
 (defn char-set-parser
   "Return a parser that matches any character in `cs`"
   [cs]
-  (alt-parser (map (fn [c] (delay (char-parser c))) cs)))
+  (alt-parser (map (fn [c] (char-parser c)) cs)))
+
+(defn char-range-parser [& ranges]
+  (char-set-parser
+   (mapcat (fn [[r1 r2]]
+             (map char (range (int r1) (inc (int r2)))))
+           (partition 2 ranges))))
 
 (defn kleene-parser
   "Return a parser that matches `parser` any number of times"
   [parser]
-  (alt-parser [(null-string #{[]})
+  (alt-parser [(null-string #{'()})
                (right-joining-and-parser parser (kleene-parser parser))]))
-
-(def *-parser kleene-parser)
-(defn +-parser [parser]
-  (right-joining-and-parser parser (kleene-parser parser)))
