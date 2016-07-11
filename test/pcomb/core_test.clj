@@ -106,3 +106,11 @@
   itrs
   (prop/for-all [s gen/string]
     (= (set (parse-full (string-parser s) s)) #{s})))
+
+(defspec kleene-star-test
+  itrs
+  (prop/for-all [c gen/char
+                 i (gen/resize 10 gen/pos-int)]
+    (let [v (repeat i c)]
+      (= (set (parse-full (kleene-parser (char-parser c)) (apply str v)))
+         #{(map str v)}))))
