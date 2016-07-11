@@ -3,6 +3,7 @@
 
 (defprotocol Parser
   (-parse-null [_])
+  (-is-nullable? [_])
   (-is-empty? [_])
   (-derivep [_ c]))
 
@@ -18,6 +19,13 @@
 
 (defn parse-null [parser]
   (-parse-null parser))
+
+(s/fdef is-nullable?
+        :args (s/cat :parser ::parser)
+        :ret boolean?)
+
+(defn is-nullable? [parser]
+  (-is-nullable? parser))
 
 (s/fdef is-empty?
         :args (s/cat :parser ::parser)
@@ -49,6 +57,7 @@
 (def empty-language
   "The empty language accepts no strings and returns an empty null parse"
   (reify Parser
+    (-is-nullable? [_] false)
     (-is-empty? [_] true)
     (-derivep [_ chr]
       empty-language)
@@ -60,7 +69,8 @@
    the value of `outp` for the null result"
   [outp]
   (reify Parser
-    (-is-empty? [_] true)
+    (-is-nullable? [_] true)
+    (-is-empty? [_] false)
     (-derivep [_ chr]
       empty-language)
     (-parse-null [_]
@@ -70,6 +80,7 @@
   "Parses a single character"
   [c]
   (reify Parser
+    (-is-nullable? [_] false)
     (-is-empty? [_] false)
     (-derivep [_ chr]
       (if (= chr c)
@@ -95,6 +106,7 @@
 
 (defn reduction-parser* [parser f]
   (reify Parser
+    (-is-nullable? [_] (is-nullable? @parser))
     (-is-empty? [_] (is-empty? @parser))
     (-derivep [_ chr]
       (reduction-parser (derivep @parser chr) f))
@@ -109,11 +121,23 @@
 
 (defn alt-parser* [parsers]
   (reify Parser
-    (-is-empty? [_] (not-every? false? (map is-empty? @parsers)))
+    (-is-nullable? [_] (not-every? false? (map is-nullable? @parsers)))
+    (-is-empty? [_] false)  ;; This is only used for a shortcut, okay to not respond (I think)
     (-derivep [_ chr]
-      ;; Lazy compute additional parsers
-      (alt-parser (map (fn [parser]
-                         (derivep parser chr)) @parsers)))
+      ;; Remove all null parsers
+      (let [non-empty-parsers (remove is-empty? @parsers)]
+        (cond
+          (empty? non-empty-parsers)
+          empty-language
+
+          (= (count non-empty-parsers) 1)
+          (derivep (first non-empty-parsers) chr)
+
+          :else
+          (alt-parser (map (fn [parser]
+                             (derivep parser chr)) non-empty-parsers)))
+        (alt-parser (map (fn [parser]
+                             (derivep parser chr)) @parsers))))
     (-parse-null [this]
       (mapcat parse-null @parsers))))
 
@@ -125,10 +149,12 @@
 
 (defn and-parser* [parser1 parser2]
   (reify Parser
-    (-is-empty? [_] (and (is-empty? @parser1)
-                         (is-empty? @parser2)))
+    (-is-nullable? [_] (and (is-nullable? @parser1)
+                            (is-nullable? @parser2)))
+    (-is-empty? [_] (or (is-empty? @parser1)
+                        (is-empty? @parser2)))
     (-derivep [_ chr]
-      (if (is-empty? @parser1)
+      (if (is-nullable? @parser1)
         (alt-parser
          [(and-parser (derivep @parser1 chr) @parser2)
           (and-parser (null-string (parse-null @parser1))
@@ -185,3 +211,17 @@
   [parser]
   (alt-parser [(null-string #{'()})
                (right-joining-and-parser parser (kleene-parser parser))]))
+
+;; Implemented directly, performance improvement?
+(defn kleene-parser*
+  "Return a parser that matches `parser` any number of times"
+  [parser]
+  (reify Parser
+    (-is-nullable? [_] true)
+    (-is-empty? [_] (is-empty? parser))
+    (-derivep [_ chr]
+      (reduction-parser
+       (and-parser (derivep parser chr) (kleene-parser* parser))
+       (fn [[a b]] (conj b a))))
+    (-parse-null [this]
+      #{nil})))

@@ -38,7 +38,7 @@
 
 (defspec null-string-is-empty-for-all-chars
   itrs
-  (prop/for-all [c (gen/vector gen/char)]
+  (prop/for-all [c (gen/not-empty (gen/vector gen/char))]
     (is (= true (is-empty? (derive-recur (null-string []) c))))))
 
 (defspec null-string-language-rejects-all-inputs-non-empty
@@ -61,7 +61,7 @@
   itrs
   (prop/for-all [c gen/char]
     (let [parser (derivep (char-parser c) c)]
-      (and (is-empty? parser)
+      (and (is-nullable? parser)
            (= (parse-null parser) #{(str c)})))))
 
 (defspec char-parser-derives-empty-when-not-matching
